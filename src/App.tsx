@@ -22,9 +22,6 @@ export const App = () => (
       <Grid minH="100vh" p={3}>
         <ColorModeSwitcher justifySelf="flex-end" />
         <Container maxW={"container.xl"}>
-          <Flex mb={5}>
-            <Button>Run</Button>
-          </Flex>
           <HomePage />
         </Container>
       </Grid>
