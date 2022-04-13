@@ -1,0 +1,6 @@
+let x = Uint128 42 in
+let f = fun (z : Uint128) => x in
+let y = x in
+let a = y in
+let m = {_tag : "Main"; _amount : x; _code: y} in
+m
