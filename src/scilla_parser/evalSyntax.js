@@ -1,13 +1,26 @@
 // Evaluator Class
 // https://medium.com/dailyjs/compiler-in-javascript-using-antlr-9ec53fd2780f
-import ScillaType, { substTypeinType } from "./types.js";
+import ScillaType, {
+  MapType,
+  ppType,
+  resolveTMapKey,
+  resolveTMapValue,
+  substTypeinType,
+} from "./types.js";
 import { ScillaExpr as SE, Pattern, Error } from "./syntax.js";
 import SyntaxVisitor from "./syntaxVisitor.js";
 import * as SL from "./literals.js";
 import Builtins from "./builtins.js";
 import _ from "lodash";
 import * as DT from "./datatypes.js";
-import { isError, setError } from "./general.js";
+import {
+  addLineToLogOutput,
+  isError,
+  logOutput,
+  printLog,
+  setError,
+} from "./general.js";
+import util from "util";
 
 const ST = new ScillaType();
 const SV = new SyntaxVisitor();
@@ -17,7 +30,6 @@ export default class Evaluator {
   constructor(env) {
     this.globalEnv = env;
     this.ADTDict = new DT.DataTypeDict();
-    this.lastCalledFunction = undefined;
   }
 
   lookup(x, env) {
@@ -80,7 +92,7 @@ export default class Evaluator {
       const kts = substTypeinType(tvar, type, lit.mtyp.t1);
       const vts = substTypeinType(tvar, type, lit.mtyp.t2);
       const newMap = new Map(
-        new ST.MapType(ST.resolveTMapKey(kts), ST.resolveTMapValue(vts))
+        new MapType(resolveTMapKey(kts), resolveTMapValue(vts))
       );
       const ltsKeys = Object.keys(lit.kv);
       ltsKeys.forEach((lKey) => {
@@ -91,8 +103,10 @@ export default class Evaluator {
       return newMap;
     } else if (lit instanceof SL.ADTValue) {
       const cloneLit = new SL.ADTValue(lit.name, null, null);
-      cloneLit.typl = lit.typl.map((typ) => ST.substTypeinType(typ));
-      cloneLit.ll = lit.ll.map((l) => this.substTypeInLit(l));
+      cloneLit.typl = lit.typl.map((typ) => {
+        return substTypeinType(tvar, type, typ);
+      });
+      cloneLit.ll = lit.ll.map((l) => this.substTypeInLit(tvar, type, l));
       return cloneLit;
     } else {
       return lit;
@@ -110,17 +124,41 @@ export default class Evaluator {
     }
 
     //If Lit, update the lit
-    if (expr.a instanceof SL.ScillaLiterals) {
-      this.substTypeInLit(tvar, tp, expr.a.l);
+    if (expr instanceof SL.ScillaLiterals) {
+      expr = this.substTypeInLit(tvar, tp, expr);
       return expr;
     }
+    //If Lit, update the lit
+    // if (expr.a instanceof SL.ScillaLiterals) {
+    //   this.substTypeInLit(tvar, tp, expr.a.l);
+    //   return expr;
+    // }
     // this.printError("substTypeInExpr", "Couldn't match Atomic");
     // return expr;
 
     if (expr instanceof SE.Fun) {
       //Update type in fun type - Note: doesn't do anything yet
-      substTypeinType(tvar, tp, expr.ty);
-      this.substTypeInExpr(tvar, tp, expr.e);
+      if (printLog) {
+        // addLineToLogOutput(
+        //   `before type substitution ${util.inspect(expr.ty, false, null, true)}`
+        // );
+      }
+      expr.ty = substTypeinType(tvar, tp, expr.ty);
+      expr.e = this.substTypeInExpr(tvar, tp, expr.e);
+      if (printLog) {
+        // addLineToLogOutput(
+        //   `after type substitution ${util.inspect(expr.ty, false, null, true)}`
+        // );
+      }
+      return expr;
+    }
+
+    if (expr instanceof SE.Match) {
+      //Update type in fun type - Note: doesn't do anything yet
+      expr.clauses = expr.clauses.map((expPm) => {
+        expPm.exp = this.substTypeInExpr(tvar, tp, expPm.exp);
+        return expPm;
+      });
       return expr;
     }
 
@@ -128,7 +166,7 @@ export default class Evaluator {
       if (expr.i === tvar) {
         return expr;
       } else {
-        this.substTypeInExpr(tvar, tp, expr.e);
+        expr.e = this.substTypeInExpr(tvar, tp, expr.e);
         return expr;
       }
     }
@@ -152,37 +190,23 @@ export default class Evaluator {
       if (expr.ty !== undefined) {
         substTypeinType(tvar, tp, expr.ty);
       }
-      this.substTypeInExpr(tvar, tp, expr.lhs); //lhs
-      this.substTypeInExpr(tvar, tp, expr.rhs); //rhs
+      expr.lhs = this.substTypeInExpr(tvar, tp, expr.lhs); //lhs
+      expr.rhs = this.substTypeInExpr(tvar, tp, expr.rhs); //rhs
       return expr;
     }
 
     if (expr instanceof SE.TApp) {
-      substTypeinType(tvar, tp, expr.f);
+      expr.targs = expr.targs.map((ty) => substTypeinType(tvar, tp, ty));
       return expr;
     }
   }
 
   evalCid(ctx, env) {
     return ctx;
-    // return ctx instanceof SP.CidCidContext
-    //   ? this.evalCID(ctx.id)
-    //   : ctx instanceof SP.CidBystrContext
-    //   ? this.evalCIDBystr(ctx.bystr)
-    //   : this.printError("evalCid", "Couldn't match cid type");
   }
 
   evalSid(ctx, env) {
     return ctx; // does not account for SidCid
-
-    // console.log("Looking for SID " + ctx.getText());
-    // return ctx instanceof SP.SidNameContext
-    //   ? this.evalID(ctx.name)
-    //   : ctx instanceof SP.SidSPIDContext
-    //   ? undefined
-    //   : ctx instanceof SP.SidCidContext
-    //   ? undefined
-    //   : this.printError("evalSid", "Couldn't match sid");
   }
 
   evalScid(ctx, env) {
@@ -241,6 +265,11 @@ export default class Evaluator {
     const param = ctx.id;
     const clo = (x) => {
       const env_ = _.cloneDeep(env);
+      // if (printLog) {
+      //   addLineToLogOutput(
+      //     `Binding ${param} to ${x.constructor.name}: ${JSON.stringify(x)}`
+      //   );
+      // }
       env_[param] = x;
       return this.evalExp(ctx.e, env_);
     };
@@ -301,12 +330,12 @@ export default class Evaluator {
       return;
     }
 
-    const typeArgs =
-      ctx.targs !== undefined
-        ? ctx.targs.map((targ) =>
-            targ.ts !== null ? ST.resolveTArg(targ) : targ.getText()
-          )
-        : undefined;
+    // const typeArgs =
+    //   ctx.targs !== undefined
+    //     ? ctx.targs.map((targ) =>
+    //         targ.ts !== null ? ST.resolveTArg(targ) : targ.getText()
+    //       )
+    //     : undefined;
 
     const builtinArgs = this.evalBuiltinArgs(ctx.xs).map((arg) => {
       return this.lookup(arg, env);
@@ -423,8 +452,12 @@ export default class Evaluator {
      * i.e., for each pattern there must be a legal (type-safe) value of x
      * that matches that pattern, and which does not match
      * any pattern preceding it.
+     *
+     * Current implementation does an under estimate of a well
+     * formed match expression by only checking the value provided during run
+     * time and not all possible values (which would require enumeration
+     * of the types of the literals of the ADTValue)
      */
-
     const checkPattern = (value, ctx) => {
       if (ctx instanceof Pattern.WildCard) {
         // no binding required
@@ -501,6 +534,7 @@ export default class Evaluator {
       setError(new Error("Duplicate pattern found in pattern match"));
       return undefined;
     }
+
     if (clauseReachability.every((reached) => reached === 0)) {
       setError(new Error("Non-exhaustive pattern matching found"));
       return undefined;
@@ -512,7 +546,7 @@ export default class Evaluator {
   enumerateExpectedPatterns(value) {
     /**
      * This function should enumerate all expected patterns
-     * using the bounded variable's value to enumerate
+     * using the type of the value to enumerate
      * the kind of types and hence constructors that must appear
      * in the match expression for it to be well-formed.
      */
@@ -547,6 +581,9 @@ export default class Evaluator {
     const tvar = ctx.i;
     const clo = (tp) => {
       const env_ = _.cloneDeep(env);
+      if (printLog) {
+        // addLineToLogOutput(`Instantiating ${tvar} as ${ppType(tp)}`);
+      }
       const exp = this.substTypeInExpr(tvar, tp, ctx.e);
       return this.evalSimpleExp(exp, env_);
     };
@@ -568,7 +605,6 @@ export default class Evaluator {
       const partialRes = tres.clo(arg);
       return partialRes;
     }, tfunc);
-
     return fullyAppliedTRes;
   }
 
